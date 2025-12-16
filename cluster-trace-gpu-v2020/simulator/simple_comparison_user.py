@@ -11,6 +11,7 @@ from simulator import Simulator
 from pathlib import Path
 from collections import defaultdict
 from bisect import bisect_left, bisect_right
+import pandas as pd
 
 def create_filtered_traces(original_trace, target_user, output_path):
     """Create single-user and multi-user traces for comparison."""
@@ -42,104 +43,6 @@ def create_filtered_traces(original_trace, target_user, output_path):
     print(f"Created single-user trace: {len(user_jobs)} jobs")
 
     return output_path, len(user_jobs)
-
-def get_job_overlaps_from_trace(trace_filename):
-    """
-    Create a dict that maps job_ids to the number of jobs that run at any point 
-    during that job's lifetime (i.e. the job overlaps).
-    NOTE: the minimum number of overlaps is 1 as a job overlaps with itself
-    """
-
-    path = Path(trace_filename)
-    with path.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-        if not rows:
-            raise ValueError("Input trace is empty")
-
-    class SubmitDuration:
-        def __init__(self, job_id, start, duration):
-            self.job_id = job_id
-            self.start = start
-            self.end = start + max(0.0, duration)
-
-    # map available header names to canonical start/duration keys
-    job_id_key = "job_id"
-    start_key = "submit_time"
-    dur_key = "duration"
-
-    # parse intervals
-    submits = []
-    for r in rows:
-        try:
-            id = int(r.get(job_id_key, 0) or 0)
-        except ValueError:
-            raise ValueError(f"Job id not found for {r}")
-        try:
-            s = float(r.get(start_key, 0) or 0)
-        except ValueError:
-            raise ValueError(f"Start not found for {r}")
-        try:
-            d = float(r.get(dur_key, 0) or 0)
-        except ValueError:
-           raise ValueError(f"End not found for {r}")
-        submits.append(SubmitDuration(id, s, d))
-
-    # prepare sorted lists for sweep counting
-    starts_sorted = sorted([s.start for s in submits])
-    ends_sorted = sorted([s.end for s in submits])
-
-    concurrent_jobs = {}
-    for submit in submits:
-        num_start_before_end = bisect_left(starts_sorted, submit.end)
-        num_end_after_start = bisect_right(ends_sorted, submit.start)
-        overlaps = num_start_before_end - num_end_after_start
-        concurrent_jobs[submit.job_id] = overlaps
-    return concurrent_jobs
-
-def get_user_to_jobs(trace_filename):
-    print(os.getcwd())
-    
-    path = Path(trace_filename)
-    with path.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-        if not rows:
-            raise ValueError("Input trace is empty")
-    
-    job_key = "job_id"
-    user_key = "user"
-    
-    user_to_jobs = {}
-    for r in rows:
-        user = str(r.get(user_key))
-        job_id = int(r.get(job_key))
-        if(user in user_to_jobs):
-            user_to_jobs[user].append(job_id)
-        else:
-            user_to_jobs[user] = [job_id]
-
-    return user_to_jobs
-
-def get_all_users(trace_filename):
-    """
-    Loop through the trace and return a list of all unique users.
-    """
-    path = Path(trace_filename)
-    with path.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-        if not rows:
-            raise ValueError("Input trace is empty")
-    
-    user_key = "user"
-    users = set()
-    
-    for r in rows:
-        user = str(r.get(user_key))
-        users.add(user)
-    
-    return list(users)
 
 def get_average_concurrent_users(target_user, trace_filename):
     """
@@ -257,15 +160,6 @@ def run_simulation(trace_filename, num_jobs, num_gpus):
 
     return simulator.cluster.job_history.job_done_list
 
-# NOTE: This count overlap with jobs from the same user
-def get_users_to_overlap(users_to_jobs, job_to_overlaps):
-    users_to_overlap = {}
-    for user, jobs in users_to_jobs.items():
-        overlap_for_user = []
-        for job in jobs:
-            overlap_for_user.append(job_to_overlaps[job])
-        users_to_overlap[user] = overlap_for_user
-    return users_to_overlap
 
 def compare_single_and_actual_jct(user, single_results, original_results, num_jobs_in_original):
     sharing_incentives = []
@@ -315,55 +209,21 @@ def process_user_task(target_user, original_trace_path, original_results, num_jo
         traceback.print_exc()
         return target_user, False
 
-def jct_test():
-    num_jobs = 50000
-    num_gpus = 6500
-    
-    # original_trace_path = Path("simulator/traces/pai/pai_job_duration_estimate_100K.csv")
-    # original_results = run_simulation(original_trace_path, num_jobs, num_gpus)
 
-    single_trace_path = Path("simulator/traces/pai/pai_job_duration_estimate_single.csv")
-    single_results_3 = run_simulation(single_trace_path, 1, 3)
-    single_results_1 = run_simulation(single_trace_path, 1, 1)
-
-    print(single_results_3)
-    print(single_results_1)
-    
-
-    # original_results = run_simulation(original_trace_path, num_jobs, num_gpus)
-    
-
-def main():
+def main(user):
     num_jobs = 100000
     num_gpus = 6500
 
+    original_results_path = Path("results/original_results.csv")
+    original_results = pd.read_csv(original_results_path).to_dict(orient='records')
     original_trace_path = Path("simulator/traces/pai/pai_job_duration_estimate_100K.csv")
-    # original_results = run_simulation(original_trace_path, num_jobs, num_gpus)
-
-    # Path("results").mkdir(exist_ok=True)
-
-    # # Write original_results to CSV
-    # with open("results/original_results.csv", "w", newline="") as f:
-    #     writer = csv.DictWriter(f, fieldnames=original_results[0].keys())
-    #     writer.writeheader()
-    #     writer.writerows(original_results)
-
-    target_users = get_all_users(original_trace_path)
-    
+    # breakpoint()
     # Create results directory if it doesn't exist
     Path("results").mkdir(exist_ok=True)
+    process_user_task(user, original_trace_path, original_results, num_jobs, num_gpus)
     
-    print(f"Processing {len(target_users)} users...")
-    for target_user in target_users:
-        subprocess.Popen([
-            sys.executable,
-            "simulator/simple_comparison_user.py",
-            target_user,
-        ])
-    
-    print("All users processed!")
     return 0
     
 if __name__ == "__main__":
     # sys.exit(main())
-    sys.exit(main())
+    sys.exit(main(sys.argv[1]))
